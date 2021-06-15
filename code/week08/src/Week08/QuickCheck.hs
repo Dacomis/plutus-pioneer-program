@@ -1,6 +1,6 @@
 module Week08.QuickCheck where
 
-import Test.QuickCheck
+import Test.QuickCheck ()
 
 prop_simple :: Bool
 prop_simple = 2 + 2 == (4 :: Int)
