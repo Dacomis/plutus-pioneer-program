@@ -11,7 +11,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
-module Week08.TokenSale
+module Week08.TokenSaleWithClose
   ( TokenSale (..),
     TSRedeemer (..),
     nftName,
@@ -42,32 +42,32 @@ import PlutusTx.Prelude hiding (Semigroup (..), check, unless)
 import Prelude (Semigroup (..), Show (..), uncurry)
 import qualified Prelude
 
-data TokenSale = TokenSale -- the parameter we will use for the contract
+data TokenSale = TokenSale
   { tsSeller :: !PubKeyHash,
     tsToken :: !AssetClass,
-    tsNFT :: !AssetClass -- the NFT that is used to identify the correct UTXO
+    tsNFT :: !AssetClass
   }
   deriving (Show, Generic, FromJSON, ToJSON, Prelude.Eq, Prelude.Ord)
 
 PlutusTx.makeLift ''TokenSale
 
 data TSRedeemer
-  = SetPrice Integer -- set price to a new value for the token price and lovelace
-  | AddTokens Integer -- the argument gives the amount of tokens to add
-  | BuyTokens Integer -- the arguments gives the amount of tokens to buy
-  | Withdraw Integer Integer -- first argument = how many tokens to withdraw; the second argument = how many lovelace to withdraw
+  = SetPrice Integer
+  | AddTokens Integer
+  | BuyTokens Integer
+  | Withdraw Integer Integer
   | Close
   deriving (Show, Prelude.Eq)
 
 PlutusTx.unstableMakeIsData ''TSRedeemer
 
 {-# INLINEABLE lovelaces #-}
-lovelaces :: Value -> Integer -- given a value extracts the amount of lovelace is in the value
+lovelaces :: Value -> Integer
 lovelaces = Ada.getLovelace . Ada.fromValue
 
 {-# INLINEABLE transition #-}
 transition :: TokenSale -> State (Maybe Integer) -> TSRedeemer -> Maybe (TxConstraints Void Void, State (Maybe Integer))
-transition ts s r = case (stateValue s, stateData s, r) of -- split the given state into the value and the datum
+transition ts s r = case (stateValue s, stateData s, r) of
   (v, Just _, SetPrice p)
     | p >= 0 ->
       Just
@@ -106,10 +106,11 @@ transition ts s r = case (stateValue s, stateData s, r) of -- split the given st
               <> lovelaceValueOf (negate l)
         )
   (_, Just _, Close) ->
-      Just (Constraints.mustBeSignedBy (tsSeller ts),
-          State Nothing
+    Just
+      ( Constraints.mustBeSignedBy (tsSeller ts),
+        State Nothing $
           mempty
-        )
+      )
   _ -> Nothing
   where
     nft :: Integer -> Value
@@ -151,30 +152,24 @@ mapErrorSM = mapError $ pack . show
 nftName :: TokenName
 nftName = "NFT"
 
--- is supposed to be invoked by the seller to set up this state machine
--- Maybe CurrencySymbol if you pass in nothing this off-chain contract will mint a new NFT for you using the forge contract method from the currency use case, but you can also provide just currency symbol if the NFT already exists.
--- AssetClass is the token you want to trade
--- Contract (Last TokenSale) s Text TokenSale - using the writer monad type with the last type (Last TokenSale)
--- once the token sale has been set up, it gets written here so that other contracts have the possibility to discover that, but I also return the created token sale in the end
 startTS :: HasBlockchainActions s => Maybe CurrencySymbol -> AssetClass -> Contract (Last TokenSale) s Text TokenSale
 startTS mcs token = do
-  pkh <- pubKeyHash <$> Contract.ownPubKey -- public key hash of the seller
-  cs <- case mcs of -- I check whether NFT currency similar has already been provided or not
-    Nothing -> C.currencySymbol <$> mapErrorC (C.forgeContract pkh [(nftName, 1)]) -- if not, I use this forge contract as before to mint a fresh NFT
-    Just cs' -> return cs' -- I use the curency similar provided in the function
+  pkh <- pubKeyHash <$> Contract.ownPubKey
+  cs <- case mcs of
+    Nothing -> C.currencySymbol <$> mapErrorC (C.forgeContract pkh [(nftName, 1)])
+    Just cs' -> return cs'
   let ts =
         TokenSale
-          { tsSeller = pkh, -- my own pkh
+          { tsSeller = pkh,
             tsToken = token,
             tsNFT = AssetClass (cs, nftName)
           }
-      client = tsClient ts -- I set up a state machine client
-  void $ mapErrorSM $ runInitialise client (Just 0) mempty -- runInitialize using a client initial price of zero and no additional funds on top of the NFT which is automatically added
+      client = tsClient ts
+  void $ mapErrorSM $ runInitialise client (Just 0) mempty
   tell $ Last $ Just ts
   logInfo $ "started token sale " ++ show ts
   return ts
 
--- I need the TokenSale argument to identify the correct contract
 setPrice :: HasBlockchainActions s => TokenSale -> Integer -> Contract w s Text ()
 setPrice ts p = void $ mapErrorSM $ runStep (tsClient ts) $ SetPrice p
 
@@ -190,13 +185,13 @@ withdraw ts n l = void $ mapErrorSM $ runStep (tsClient ts) $ Withdraw n l
 close :: HasBlockchainActions s => TokenSale -> Contract w s Text ()
 close ts = void $ mapErrorSM $ runStep (tsClient ts) Close
 
-type TSStartSchema = -- for the seller who wants to start the contract
+type TSStartSchema =
   BlockchainActions
-    .\/ Endpoint "start" (CurrencySymbol, TokenName) -- it takes the currency symbol and the token name of the asset to be traded
+    .\/ Endpoint "start" (CurrencySymbol, TokenName)
 
 type TSStartSchema' =
   BlockchainActions
-    .\/ Endpoint "start" (CurrencySymbol, CurrencySymbol, TokenName) -- additionally takes the currency symbol of the provided NFT
+    .\/ Endpoint "start" (CurrencySymbol, CurrencySymbol, TokenName)
 
 type TSUseSchema =
   BlockchainActions
@@ -207,9 +202,8 @@ type TSUseSchema =
     .\/ Endpoint "close" ()
 
 startEndpoint :: Contract (Last TokenSale) TSStartSchema Text ()
-startEndpoint = startTS' >> startEndpoint -- calls startTS', and then recurses
+startEndpoint = startTS' >> startEndpoint
   where
-    -- startTS' calls endpoint to block until the parameters are provided and then runs startTS using nothing as the first argument indicating that the NFT has to be minted
     startTS' = handleError logError $ endpoint @"start" >>= void . startTS Nothing . AssetClass
 
 startEndpoint' :: Contract (Last TokenSale) TSStartSchema' Text ()

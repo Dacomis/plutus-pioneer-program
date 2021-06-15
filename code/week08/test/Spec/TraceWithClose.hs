@@ -12,9 +12,9 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
-module Spec.Trace
+module Spec.TraceWithClose
   ( tests,
-    runMyTrace,
+    runMyTraceWithClose,
   )
 where
 
@@ -31,7 +31,7 @@ import Plutus.Contract.Test
 import Plutus.Trace.Emulator as Emulator
 import PlutusTx.Prelude
 import Test.Tasty
-import Week08.TokenSale
+import Week08.TokenSaleWithClose
 import Prelude (IO, Show (..), String)
 
 tests :: TestTree
@@ -39,20 +39,21 @@ tests =
   checkPredicateOptions
     (defaultCheckOptions & emulatorConfig .~ emCfg)
     "token sale trace"
-    ( walletFundsChange (Wallet 1) (Ada.lovelaceValueOf 10_000_000 <> assetClassValue token (-60))
+    ( walletFundsChange (Wallet 1) (Ada.lovelaceValueOf 25_000_000 <> assetClassValue token (-25))
         .&&. walletFundsChange (Wallet 2) (Ada.lovelaceValueOf (-20_000_000) <> assetClassValue token 20)
         .&&. walletFundsChange (Wallet 3) (Ada.lovelaceValueOf (- 5_000_000) <> assetClassValue token 5)
     )
     myTrace
 
-runMyTrace :: IO ()
-runMyTrace = runEmulatorTraceIO' def emCfg myTrace
+runMyTraceWithClose :: IO ()
+runMyTraceWithClose = runEmulatorTraceIO' def emCfg myTrace
 
-emCfg :: EmulatorConfig -- custom emulator configuration
-emCfg = EmulatorConfig $ Left $ Map.fromList [(Wallet w, v) | w <- [1 .. 3]]
+emCfg :: EmulatorConfig
+emCfg = EmulatorConfig $ Left $ Map.fromList [(Wallet w, v' w) | w <- [1 .. 3]]
   where
     v :: Value
-    v = Ada.lovelaceValueOf 1000_000_000 <> assetClassValue token 1000 -- every wallet gets 1000 ADA and 1000 tokens
+    v = Ada.lovelaceValueOf 1000_000_000 <> assetClassValue token 1000
+
     v' :: Integer -> Value
     v' w
       | w == 1 = v <> assetClassValue nft 1
@@ -71,15 +72,16 @@ nft = AssetClass (nftCurrency, nftName)
 
 myTrace :: EmulatorTrace ()
 myTrace = do
-  h <- activateContractWallet (Wallet 1) startEndpoint' -- we activate the start endpoint
-  callEndpoint @"start" h (nftCurrency, tokenCurrency, tokenName') -- and call it with currency and name
+  h <- activateContractWallet (Wallet 1) startEndpoint'
+  callEndpoint @"start" h (nftCurrency, tokenCurrency, tokenName')
   void $ Emulator.waitNSlots 5
   Last m <- observableState h
   case m of
     Nothing -> Extras.logError @String "error starting token sale"
     Just ts -> do
-      Extras.logInfo $ "started token sale " ++ show ts -- loge the token sale
-      h1 <- activateContractWallet (Wallet 1) $ useEndpoints ts -- activate use endpoints
+      Extras.logInfo $ "started token sale " ++ show ts
+
+      h1 <- activateContractWallet (Wallet 1) $ useEndpoints ts
       h2 <- activateContractWallet (Wallet 2) $ useEndpoints ts
       h3 <- activateContractWallet (Wallet 3) $ useEndpoints ts
 
@@ -95,6 +97,6 @@ myTrace = do
       callEndpoint @"buy tokens" h3 5
       void $ Emulator.waitNSlots 5
 
-      -- callEndpoint @"withdraw" h1 (40, 10_000_000)
-      -- callEndpoint @"close" h1 ()
+      callEndpoint @"close" h1 ()
+      --          callEndpoint @"withdraw" h1 (40, 10_000_000)
       void $ Emulator.waitNSlots 5
